@@ -1,21 +1,29 @@
-# 🔍 CodeReview Agent
+# 🔍 代码审查 Workflow（编码 → 审查 → 修复）
 
-基于 **Python + LangChain + LLM + Tool + Streamlit** 的智能代码审查 Agent。
-
-用户输入代码后，Agent 通过大语言模型进行多维度分析；当运行验证有助于确认问题时，Agent 会自主调用 `execute_python` 工具执行代码，并结合工具的真实结果生成结构化中文审查报告。
+基于 **Python + LangChain + GLM + Streamlit** 的三 Agent 协作流水线，衔接课程项目一（CodeReview Agent）：
+**小A 写代码 → 小B 审查 → 有问题小C 修复 → 复审通过**，全流程自动执行并记录日志。
 
 ---
 
 ## 项目简介
 
-本项目是一个完整的 **LLM Agent 课程实践项目**，完整覆盖以下技术点：
+本项目是课程项目二，目标是通过搭建 2~3 个 Agent 协作的 Workflow，理解三大核心概念：
 
-- LLM 调用与 Prompt 工程
-- Agent 设计模式（ReAct：推理 → 工具调用 → 综合分析）
-- Tool 自定义与注册（`@tool`）
-- 上下文记忆
-- 错误处理与重试
-- Web 交互界面（Streamlit）
+- **Workflow 编排**：谁决定执行顺序、谁启动下一个 Agent
+- **Agent 间通信**：上一个 Agent 的输出如何成为下一个 Agent 的输入
+- **状态管理**：中间产物与进度记录在哪里、如何追踪
+
+项目一已实现单 Agent 代码审查（`CodeReviewAgent`），本项目将其**复用为审查节点**，并新增"编码 Agent"与"修复 Agent"，组成一条完整的代码审查流水线。
+
+### 与项目一的关系（复用清单）
+
+| 项目一模块 | 本项目中的角色 |
+|------------|----------------|
+| `agent.py`（CodeReviewAgent） | 审查 Agent（小B），直接复用 |
+| `tools.py`（execute_python） | 审查实测工具，直接复用 |
+| `config.py` | 配置入口，直接复用 |
+| `prompts.py` | 审查 Prompt 复用，新增编码/修复 Prompt |
+| `main_v1.py` | 项目一原版界面（备份，可对照） |
 
 ---
 
@@ -23,73 +31,38 @@
 
 | 功能 | 说明 |
 |------|------|
-| 代码审查 | 覆盖**语法错误、运行时错误、逻辑错误、代码质量**四类问题 |
-| 执行验证 | Agent 自主判断是否需要运行代码，调用 `execute_python` 工具实测 |
-| 真实结果溯源 | 基于工具真实输出分析，杜绝模型凭空编造执行结果 |
-| 结构化报告 | 固定输出：总体评价 / 发现的问题 / 工具验证结果 / 修改建议 / 参考代码 |
-| 轻量上下文记忆 | 保存最近一次审查的代码与结果，支持后续追问 |
-| Web 界面 | Streamlit 图形界面，输入代码一键审查 |
-
-### 边界情况处理
-
-| 场景 | 处理方式 |
-|------|----------|
-| 除数为零等运行时异常 | 工具捕获 Traceback 并返回给 LLM，报告给出定位与修复代码 |
-| 空输入 | Web 界面提示「请输入需要审查的代码」，不发起 LLM 请求 |
-| 语法错误 | 工具执行失败并返回完整堆栈，LLM 据此给出语法修复建议 |
-| API Key 缺失 | Agent 初始化即报错并提示配置 `.env` |
-| LLM 请求失败 | `max_retries=2` 自动重试，仍失败则转换为可读中文错误 |
-| 工具执行异常 | 任何异常均被捕获，不影响后续分析流程 |
-| 无需运行验证的代码 | System Prompt 约束「不要为了调用工具而调用工具」 |
+| 三 Agent 协作 | 编码 Agent → 审查 Agent → 修复 Agent 接力完成完整流程 |
+| 条件分支 | 审查结论 PASS 则流程结束，FAIL 则进入修复 |
+| 循环控制 | 修复后送回复审，最多 N 轮（默认 3 轮），防止死循环 |
+| 执行日志 | 每一步写入 `workflow.log`（时间/阶段/轮次/结论），可追踪可演示 |
+| 实时进度 | 网页端实时显示当前正在执行哪个 Agent、哪个阶段 |
+| 结构化报告 | 审查报告固定五段式 + 结论行（PASS / FAIL） |
 
 ---
 
-## Agent 架构设计
-
-### 工作流程（ReAct 模式）
+## 工作流程
 
 ```text
-用户输入
+任务描述
    ↓
-┌─────────────────────────┐
-│   CodeReview Agent      │
-│   (LangChain Agent)     │
-│                         │
-│  LLM 推理分析           │
-│      ↓                  │
-│  判断是否需要工具？     │
-│    /          \         │
-│   否           是       │
-│   ↓             ↓       │
-│  直接回答    execute_   │
-│             python 工具  │
-│                  ↓      │
-│            工具真实结果  │
-│                  ↓      │
-│    LLM 结合结果综合分析  │
-│         ↓               │
-│   结构化审查报告         │
-└─────────────────────────┘
-   ↓
-最终输出
+┌────────────────┐
+│  编码 Agent     │ 小A：根据任务生成第一版代码（纯 LLM，单次请求，无工具）
+└───────┬────────┘
+        ↓ 第一版代码
+┌────────────────┐
+│  审查 Agent     │ 小B：复用项目一（静态分析 + 必要时工具实测，工具限 1 次）
+└───────┬────────┘
+        ↓ 审查报告（含"审查结论: PASS / FAIL"）
+        │
+   PASS ┤──── 流程结束，交付最终代码 ✔
+        │
+   FAIL（且未超过最大轮数）
+        ↓
+┌────────────────┐
+│  修复 Agent     │ 小C：对照审查报告逐条修复
+└───────┬────────┘
+        ↓ 修复后代码 ──► 送回审查（循环，最多 N 轮）
 ```
-
-### 设计模式说明
-
-1. **Agent 循环**：LLM 推理 → 自主决策工具调用 → 观察工具结果 → 再次推理，体现典型的 ReAct（Reasoning + Acting）设计模式
-2. **工具抽象**：`execute_python` 通过 `@tool` 装饰器注册为可调用工具，Agent 按需调用，与业务逻辑解耦
-3. **System Prompt 约束**：规定 Agent 身份、审查原则、工具调用条件与输出格式，防止模型幻觉（如谎称执行过代码）
-4. **记忆机制**：保存最近一次审查的 `code` 与 `result`，为后续多轮对话提供上下文
-
-### 模块职责划分
-
-| 模块 | 职责 | 对应评审点 |
-|------|------|-----------|
-| `main.py` | Streamlit Web 界面、输入输出交互 | 功能完整性 |
-| `agent.py` | Agent 组装（LLM + Tool + Prompt）、审查流程编排 | Agent 架构 |
-| `tools.py` | `execute_python` 工具定义、安全执行环境 | Agent 架构 / 代码质量 |
-| `prompts.py` | System Prompt 与审查要求 | Agent 架构 |
-| `config.py` | 环境变量加载与配置（API Key / Base URL / Model） | 代码质量 |
 
 ---
 
@@ -109,72 +82,38 @@ pip install -r requirements.txt
 
 ### 配置 API Key
 
-复制 `.env.example` 为 `.env`，填写：
+复制 `.env.example` 为 `.env` 并填写（项目一已配置，可直接继承）：
 
 ```text
 OPENAI_API_KEY=你的API_KEY
-OPENAI_BASE_URL=
-MODEL_NAME=gpt-4o-mini
+OPENAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+MODEL_NAME=glm-5.3-flash
 ```
-
-| 变量 | 说明 |
-|------|------|
-| `OPENAI_API_KEY` | 必填，模型服务商密钥 |
-| `OPENAI_BASE_URL` | 接口地址；OpenAI 官方可留空，第三方兼容接口必填 |
-| `MODEL_NAME` | 模型名称 |
-
-支持任何 **OpenAI 兼容接口**，常用配置示例：
-
-| 服务商 | OPENAI_BASE_URL | MODEL_NAME |
-|--------|-----------------|------------|
-| OpenAI | （留空） | gpt-4o-mini |
-| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3-flash` |
-| 火山方舟（豆包） | `https://ark.cn-beijing.volces.com/api/v3` | 开通的模型 ID / 接入点 `ep-xxx` |
-
-> 提示：`glm-5.3-flash` 等 Flash 系列模型响应更快，适合快速演示。
 
 ### 启动
-
-```bash
-streamlit run main.py
-```
-
-或（`streamlit` 未加入 PATH 时）：
 
 ```bash
 python -m streamlit run main.py
 ```
 
-浏览器自动打开 `http://localhost:8501`，输入代码后点击「🚀 开始审查」。
+浏览器打开 `http://localhost:8501`，输入任务描述，点击「运行流程」。
+
+### 命令行快速验证（不开网页）
+
+```bash
+python test_workflow_run.py
+```
 
 ### 演示
 
-输入以下代码：
+默认任务：写一个 `divide(a, b)` 函数并调用 `divide(10, 0)`。
 
-```python
-def divide(a, b):
-    return a / b
-
-print(divide(10, 0))
-```
-
-Agent 会自主调用 `execute_python` 工具验证，并输出：
-
-```text
-ZeroDivisionError: division by zero
-```
-
-最终报告中包含问题定位、工具验证结果、修改建议与参考代码。
-
----
-
-## 错误处理与健壮性
-
-- **API Key 缺失**：初始化时给出明确中文提示
-- **LLM 请求失败**：`max_retries=2` 自动重试
-- **Agent 异常**：捕获并转换为可读错误信息
-- **Tool 异常**：完整 Traceback 返回给 LLM，作为分析依据
-- **Web 异常**：Streamlit 界面展示错误而非崩溃
+| 阶段 | 预期 |
+|------|------|
+| 1. 小A 编码 | 生成 `return a / b`，未处理除零 |
+| 2. 小B 审查 | 发现运行时风险，结论 FAIL |
+| 3. 小C 修复 | 增加 `b == 0` 检查 / try-except 捕获 |
+| 4. 小B 复审 | 通过，流程结束，状态 PASS |
 
 ---
 
@@ -182,17 +121,40 @@ ZeroDivisionError: division by zero
 
 ```text
 CodeReview-Agent/
-├── main.py            # Streamlit UI
-├── agent.py           # Agent 核心（LLM + Tool + 编排）
-├── tools.py           # Python 执行工具
-├── prompts.py         # Prompt 定义
-├── config.py          # 配置加载
-├── requirements.txt   # 依赖清单
-├── .env.example       # 环境变量模板
-├── .gitignore
-├── README.md          # 本文档
-├── Design.md          # 设计文档
-└── examples/          # 示例代码
+├── main.py              # Streamlit 界面（流程展示 + 实时进度 + 日志面板）
+├── workflow.py          # 编排器：编码→审查→(修复→复审)，状态管理 + 执行日志
+├── coding_agent.py      # 编码 Agent（小A，新增）
+├── fix_agent.py         # 修复 Agent（小C，新增）
+├── agent.py             # 审查 Agent（小B，复用项目一）
+├── tools.py             # execute_python 执行工具（复用项目一）
+├── prompts.py           # Prompt 定义（审查 + 编码 + 修复）
+├── config.py            # 配置加载（复用项目一）
+├── main_v1.py           # 项目一原版界面（备份）
+├── test_workflow_run.py # 端到端验证脚本
+├── workflow.log         # 执行日志（运行后生成）
+├── requirements.txt
+├── .env.example
+├── README.md            # 本文档
+├── Design.md            # 设计文档
+└── examples/            # 项目一示例代码
+```
+
+---
+
+## 执行日志说明
+
+`workflow.log` 记录每一步：
+
+- 时间戳、阶段（ENCODE / REVIEW / FIX）、审查轮次
+- 各 Agent 输入输出摘要（代码长度、结论）
+- 最终状态（PASS / FAIL / MAX_ROUND）
+
+示例：
+
+```text
+2026-09-29 10:37:49 | INFO | [ENCODE] 编码完成（270 字符）
+2026-09-29 10:39:38 | INFO | [REVIEW] 第 1 轮发现问题，进入修复
+2026-09-29 10:41:38 | INFO | [REVIEW] 第 2 轮：通过，流程结束
 ```
 
 ---
@@ -201,24 +163,18 @@ CodeReview-Agent/
 
 | 评审维度 | 权重 | 本项目落实情况 |
 |----------|------|----------------|
-| 功能完整性 | 40% | 语法/运行时/逻辑/质量四类审查 + 工具实测验证 + 边界情况处理（见上文表格） |
-| Agent 架构 | 30% | ReAct 循环、`@tool` 工具注册、System Prompt 约束、上下文记忆、模块职责分离 |
-| 代码质量 | 20% | 职责分离（UI/Agent/Tool/Prompt/Config 五模块）、统一错误处理、异常捕获 |
-| 文档 | 10% | README（本项目）、Design.md（设计文档）、示例代码（examples/） |
+| 流程完整性 | 40% | 编码→审查→修复→复审端到端跑通，实测状态 PASS、2 轮完成 |
+| Agent 协作 | 30% | 三 Agent 通过参数传递通信，WorkflowState 管理状态，workflow.log 全程可追踪 |
+| 可扩展性 | 20% | 每个 Agent 独立成类，编排器只按流程调用；新增 Agent 零侵入；换模型只改 .env |
+| 文档 | 10% | README（本文档）+ Design.md（设计文档）+ 流程图 |
 
 ---
 
-## 安全说明
+## 常见问题
 
-`execute_python` 为课程演示工具，**不是生产环境安全沙箱**。它通过受限 builtins 执行代码，但仅适用于可信输入，不要执行来源不明或恶意代码。生产环境建议使用 Docker 等隔离机制。
-
----
-
-## 后续改进
-
-- [ ] 多语言代码审查（Java / Go / JS）
-- [ ] Docker 沙箱执行环境
-- [ ] 文件上传与多文件审查
-- [ ] 审查历史记录持久化
-- [ ] 单元测试自动生成
-- [ ] GitHub 仓库级分析
+| 问题 | 处理 |
+|------|------|
+| 浏览器打开提示拒绝连接 | 服务器未启动：执行 `python -m streamlit run main.py` 后再访问 http://localhost:8501 |
+| 运行较慢 | 属正常：审查需多次调用大模型；已优化（工具限 1 次），全流程约 3 分钟 |
+| 流程一直修复不结束 | 达到最大轮数（默认 3）会强制结束并标记 MAX_ROUND，不会死循环 |
+| 审查报告没有结论行 | 检查 `prompts.py` 是否包含"审查结论: PASS / FAIL"输出要求 |
